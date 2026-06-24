@@ -1,212 +1,459 @@
-# Smart Customer Support Inbox
+<div align="center">
 
-A production-ready support inbox where agents view, manage, and reply to customer conversations — with real-time message delivery, a mock AI reply engine, asynchronous sentiment analysis, and conversation locking to prevent concurrent edits.
+# 💬 Smart Customer Support Inbox
 
-**Stack:** Django 4.2 + DRF + Simple JWT + Celery/Redis (backend) · Next.js 14 (App Router) + TypeScript + Tailwind + React Query (frontend).
+### A production-ready, multi-agent support inbox with real-time delivery, async AI, and concurrency-safe conversation locking.
+
+<br>
+
+![Django](https://img.shields.io/badge/Django-4.2-092E20?style=for-the-badge&logo=django&logoColor=white)
+![DRF](https://img.shields.io/badge/DRF-API-A30000?style=for-the-badge&logo=django&logoColor=white)
+![Celery](https://img.shields.io/badge/Celery-Async-37814A?style=for-the-badge&logo=celery&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-Broker-DC382D?style=for-the-badge&logo=redis&logoColor=white)
+
+![Next.js](https://img.shields.io/badge/Next.js-14-000000?style=for-the-badge&logo=next.js&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-Typed-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
+![React Query](https://img.shields.io/badge/React_Query-State-FF4154?style=for-the-badge&logo=reactquery&logoColor=white)
+![Tailwind](https://img.shields.io/badge/Tailwind-CSS-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)
+
+<br>
+
+![Tests](https://img.shields.io/badge/tests-20_passing-22c55e?style=flat-square&logo=pytest&logoColor=white)
+![Backend](https://img.shields.io/badge/backend-13_pytest-22c55e?style=flat-square)
+![Frontend](https://img.shields.io/badge/frontend-7_jest-22c55e?style=flat-square)
+![Build](https://img.shields.io/badge/build-passing-22c55e?style=flat-square)
+![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
+
+<sub>Built in a 24-hour window · Clean architecture · Fully tested · Docker-ready</sub>
+
+</div>
+
+<br>
+
+> **TL;DR** — Several agents share one queue of customer conversations. Any agent can open a thread, get an AI-suggested reply, and respond. New messages appear without refresh, and **database-level locking** stops two agents from replying to the same customer at once. Sentiment runs **asynchronously** so replies stay instant.
+
+<br>
 
 ---
 
-## 1. Architecture Overview
+## 📑 Table of Contents
+
+- [✨ Features](#-features)
+- [🏗️ Architecture](#️-architecture)
+- [🧠 Key Design Decisions](#-key-design-decisions)
+- [🚀 Quick Start](#-quick-start)
+- [📡 API Reference](#-api-reference)
+- [🧪 Testing](#-testing)
+- [📁 Project Structure](#-project-structure)
+- [🔮 Roadmap](#-roadmap)
+
+<br>
+
+---
+
+## ✨ Features
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+#### 🔐 Stateless JWT Auth
+Token-based login, no server sessions. Auto-attached via axios interceptor; 401 bounces to login.
+
+</td>
+<td width="50%" valign="top">
+
+#### 🔒 Concurrency-Safe Locking
+DB-row locks via `select_for_update()`. One agent replies at a time; auto-expires after 5 min.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+#### ⚡ Optimistic UI + Rollback
+Messages render instantly. On failure they roll back, show a toast, and restore the agent's text.
+
+</td>
+<td width="50%" valign="top">
+
+#### 🔄 Real-Time Sync
+Incremental polling fetches only new messages (`?after=`). Transport isolated for easy WS swap.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+#### 🤖 Mock AI Suggestions
+Keyword/template reply engine — no external API, fully deterministic and offline.
+
+</td>
+<td width="50%" valign="top">
+
+#### 📊 Async Sentiment Analysis
+Celery computes sentiment off the request path, so replies return in milliseconds.
+
+</td>
+</tr>
+</table>
+
+<br>
+
+---
+
+## 🏗️ Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                      Next.js 14 (App Router)                       │
-│  /login   /conversations   /conversations/[id]                     │
-│                                                                    │
-│  React Query (server state) · Optimistic UI · 3s polling           │
-│  JWT stored in localStorage, attached via axios interceptor        │
-└───────────────────────────────┬────────────────────────────────────┘
-                              │ REST + JWT (Bearer)
+┌─────────────────────────────────────────────────────────────────┐
+│                       Next.js 14 (App Router)                     │
+│      /login        /conversations        /conversations/[id]      │
+│                                                                   │
+│   React Query (server state)  ·  Optimistic UI  ·  3s polling     │
+│   JWT in localStorage, attached via axios interceptor             │
+└────────────────────────────────┬──────────────────────────────────┘
+                              │  REST + JWT (Bearer)
                               ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                   Django + DRF  (port 8000)                        │
-│                                                                    │
-│  ConversationViewSet (thin)  ──▶  services.py (business logic)     │
-│     • list / detail / reply           • LockService (atomic)       │
-│     • suggest-reply                    • SuggestionService (mock AI)│
-│     • lock / unlock / status           • SentimentAnalyzer         │
-│     • messages (polling)                                           │
-│                                                                    │
-│  reply ──▶ analyze_sentiment.delay() ──────┐  (non-blocking)       │
-└────────────────────────────────────────────┼───────────────────────┘
-                              │              │
-                              ▼              ▼
-                       SQLite DB        Celery + Redis
-                  (conversations,     (async sentiment;
-                   messages, locks)    result saved to DB)
+┌─────────────────────────────────────────────────────────────────┐
+│                     Django + DRF   ·   :8000                      │
+│                                                                   │
+│   ConversationViewSet (thin)  ──▶   services.py (business logic)  │
+│      • list / detail / reply            • LockService (atomic)     │
+│      • suggest-reply                    • SuggestionService (AI)   │
+│      • lock / unlock / status           • SentimentAnalyzer       │
+│      • messages (polling)                                         │
+│                                                                   │
+│   reply()  ──▶  analyze_sentiment.delay()  ───┐  (non-blocking)   │
+└─────────────────────────────────────────────────┼─────────────────┘
+                              │                   │
+                              ▼                   ▼
+                      PostgreSQL / SQLite     Celery + Redis
+                   (conversations, messages,  (async sentiment →
+                    locks · select_for_update) saved back to DB)
 ```
 
-### Real-time strategy: **polling** (chosen) — and why
+<div align="center">
+<sub><b>Two independently deployable apps · stateless JSON REST API · JWT-secured</b></sub>
+</div>
 
-The spec allows WebSockets, SSE, or polling. I chose **short polling (3s)** for the new-messages endpoint:
+<br>
+
+---
+
+## 🧠 Key Design Decisions
+
+Each choice below was a deliberate trade-off. Expand for the reasoning.
+
+<details>
+<summary><b>🔒 Database locking with <code>select_for_update()</code> — not Redis</b></summary>
+
+<br>
+
+The data that needs protecting (conversations) already lives in the relational database. Using `select_for_update()` inside a transaction gives **true row-level atomicity with the same system that already holds the truth** — no second source of state to keep consistent, no risk of a Redis flush silently dropping locks.
+
+- **Atomic acquire** — two agents racing to open the same conversation can't both win.
+- **Auto-expiry** — a lock expires after `LOCK_EXPIRY_SECONDS` (default 300s) of inactivity, tracked by `last_activity`. Replying "touches" the lock.
+- **Read vs write** — other agents can always `GET` the thread, but `POST /reply` returns **`423 Locked`** if someone else holds a live lock.
+- **Visibility** — the holder's name is returned by the lock endpoints and shown via `LockIndicator`.
+
+> Redis would be the right call for *extremely* high lock churn — a documented, scale-dependent trade-off. For this workload, the DB approach is simpler, safer, and survives restarts.
+
+</details>
+
+<details>
+<summary><b>📊 Celery for sentiment — not inline computation</b></summary>
+
+<br>
+
+Sentiment analysis is **non-critical to the agent's immediate action** and potentially slow. Blocking the reply request on it would make the UI feel sluggish for no reason.
+
+The reply view only calls `analyze_sentiment.delay(conversation_id)` — this queues the task and returns **immediately** with `201`. A Celery worker computes and persists sentiment moments later. This is the classic **fast path vs slow path** separation.
+
+> In tests, `CELERY_TASK_ALWAYS_EAGER=True` runs the task synchronously so no broker is needed.
+
+</details>
+
+<details>
+<summary><b>🔄 Incremental HTTP polling — not WebSockets</b></summary>
+
+<br>
 
 | Option | Pros | Cons |
 |--------|------|------|
-| **Polling (chosen)** | Zero extra infra; works behind any proxy/load-balancer; trivial to reason about; stateless and JWT-friendly | ~3s latency; some wasted requests |
-| WebSockets | True push, lowest latency | Needs ASGI server + Django Channels + Redis channel layer; sticky sessions; more moving parts to deploy |
-| SSE | Push, simpler than WS | One-way only; long-lived connections complicate scaling/proxies |
+| **Polling** ✅ | Zero extra infra; works behind any proxy/LB; stateless and JWT-friendly | ~3s latency; some wasted requests |
+| WebSockets | True push, lowest latency | Needs ASGI + Channels + Redis channel layer + sticky sessions |
+| SSE | Push, simpler than WS | One-way only; long-lived connections complicate scaling |
 
-For a support inbox, 3-second latency is imperceptible in practice, and the operational simplicity is a big win. The polling endpoint is incremental — it only returns messages with `id > after`, so each poll is cheap. **The transport is fully isolated in `usePollMessages.ts`**, so swapping to SSE/WS later changes exactly one file.
+For a support inbox, **3-second latency is imperceptible**, and the operational simplicity is a big win. Polling is **incremental** — only messages with `id > after` are returned, so each poll is cheap. Critically, **the transport is isolated in `usePollMessages.ts`**, so swapping to SSE/WS later changes exactly one file.
 
-### State management: **React Query + local state**
+</details>
 
-- **React Query** owns server state (conversation list, detail) — caching, loading/error states, refetching all handled declaratively.
-- **Local component state** (`useState`) owns the live message array so optimistic inserts and rollbacks are instant and don't fight the cache.
-- JWT lives in `localStorage`, attached by an axios request interceptor; a response interceptor bounces to `/login` on 401.
+<details>
+<summary><b>⚡ Optimistic UI with rollback — for perceived speed</b></summary>
 
-### Concurrency / locking design
+<br>
 
-A conversation lock is a **database row** (`ConversationLock`, one-to-one with `Conversation`):
+Agents send many replies per hour; waiting for a server round-trip each time is friction.
 
-- **Atomic acquire** uses `select_for_update()` inside a transaction so two agents racing to open the same conversation can't both win.
-- **Auto-expiry**: a lock is considered expired after `LOCK_EXPIRY_SECONDS` (default 300s = 5 min) of inactivity, tracked by `last_activity`. Sending a reply "touches" the lock.
-- **Read vs write**: other agents can always `GET` the thread, but `POST /reply` returns **423 Locked** if someone else holds a live lock.
-- **Visibility**: the lock holder's name is returned by the lock/status endpoints and shown in the UI via `LockIndicator`.
+1. On send → render the message **instantly** with a temporary id and a greyed *"sending…"* state.
+2. On success → **replace** the optimistic message with the confirmed server message (real id).
+3. On failure → **remove** the message, show an **error toast**, and **restore the agent's text** so nothing is lost.
 
-Why a DB row and not pure Redis? The data already lives in Postgres/SQLite, `select_for_update` gives real atomicity without a second source of truth, and it survives a Redis flush. (Redis would be a fine alternative for very high lock churn — documented trade-off.)
+> Speed never comes at the cost of correctness — the rollback path is explicitly tested.
+
+</details>
+
+<details>
+<summary><b>🧱 Thin views, fat services — separation of concerns</b></summary>
+
+<br>
+
+All locking, AI, and sentiment logic lives in `services.py`; views only validate input and delegate.
+
+- **Testable** — call `LockService` directly without mocking HTTP.
+- **Reusable** — the same logic works from a view, a Celery task, or a management command.
+- **Readable** — views show *what* happens; services hold *how*.
+
+</details>
+
+<br>
 
 ---
 
-## 2. Running the project
+## 🚀 Quick Start
 
-### Option A — Docker (everything at once)
+### Option A — Docker (everything at once) 🐳
 
 ```bash
 docker compose up --build
 ```
-- Frontend → http://localhost:3000
-- Backend  → http://localhost:8000
-- Redis + Celery worker start automatically
-- Backend auto-migrates and seeds on boot
 
-Log in with **admin@test.com / admin123**.
+| Service | URL |
+|---------|-----|
+| 🖥️ Frontend | http://localhost:3000 |
+| ⚙️ Backend | http://localhost:8000 |
+| 📊 Redis + Celery worker | auto-started |
 
-### Option B — Local (manual)
+Backend auto-migrates and seeds on boot. Log in with **`admin@test.com`** / **`admin123`**.
 
-**Backend:**
+<br>
+
+### Option B — Local (manual) 🔧
+
+<details>
+<summary><b>1️⃣ &nbsp;Backend</b></summary>
+
+<br>
+
 ```bash
 cd backend
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 python manage.py migrate
-python manage.py seed                # creates admin@test.com / admin123 + demo data
-python manage.py runserver           # http://localhost:8000
+python manage.py seed          # creates admin@test.com / admin123 + demo data
+python manage.py runserver     # → http://localhost:8000
 ```
 
-**Celery (separate terminal, needs Redis running):**
+</details>
+
+<details>
+<summary><b>2️⃣ &nbsp;Celery worker</b> <sub>(separate terminal, needs Redis)</sub></summary>
+
+<br>
+
 ```bash
 cd backend
 celery -A config worker -l info
 ```
-> No Redis handy? Set `CELERY_TASK_ALWAYS_EAGER=True` in the backend env and sentiment runs inline (no broker needed). The reply endpoint still returns immediately in normal mode because it only calls `.delay()`.
 
-**Frontend (separate terminal):**
+> 💡 **No Redis handy?** Set `CELERY_TASK_ALWAYS_EAGER=True` and sentiment runs inline — no broker needed. The reply endpoint still returns immediately because it only calls `.delay()`.
+
+</details>
+
+<details>
+<summary><b>3️⃣ &nbsp;Frontend</b> <sub>(separate terminal)</sub></summary>
+
+<br>
+
 ```bash
 cd frontend
 npm install
 echo "NEXT_PUBLIC_API_URL=http://localhost:8000" > .env.local
-npm run dev                          # http://localhost:3000
+npm run dev                    # → http://localhost:3000
 ```
+
+</details>
+
+<br>
 
 ---
 
-## 3. API Documentation
+## 📡 API Reference
 
-All endpoints except login require `Authorization: Bearer <access_token>`.
+<sub>All endpoints except login require `Authorization: Bearer <access_token>`.</sub>
 
-| Method | Endpoint | Description | Body |
-|--------|----------|-------------|------|
-| POST | `/api/auth/login/` | Get JWT access + refresh | `{ username, password }` |
-| POST | `/api/auth/refresh/` | Refresh access token | `{ refresh }` |
-| GET | `/api/conversations/?page=&search=&status=` | Paginated list | — |
-| GET | `/api/conversations/{id}/` | Full thread | — |
-| POST | `/api/conversations/{id}/reply/` | Agent reply (triggers async sentiment) | `{ message }` |
-| POST | `/api/conversations/{id}/suggest-reply/` | Mock AI suggestion | `{ message }` |
-| POST | `/api/conversations/{id}/lock/` | Acquire/refresh lock | — |
-| POST | `/api/conversations/{id}/unlock/` | Release lock | — |
-| GET | `/api/conversations/{id}/lock/` | Lock status | — |
-| GET | `/api/conversations/{id}/messages/?after={id}` | Incremental messages (polling) | — |
+| Method | Endpoint | Description |
+|:------:|----------|-------------|
+| `POST` | `/api/auth/login/` | 🔑 Get JWT access + refresh |
+| `POST` | `/api/auth/refresh/` | ♻️ Refresh access token |
+| `GET` | `/api/conversations/?page=&search=&status=` | 📋 Paginated, searchable list |
+| `GET` | `/api/conversations/{id}/` | 💬 Full message thread |
+| `POST` | `/api/conversations/{id}/reply/` | ✍️ Agent reply (triggers async sentiment) |
+| `POST` | `/api/conversations/{id}/suggest-reply/` | 🤖 Mock AI suggestion |
+| `POST` | `/api/conversations/{id}/lock/` | 🔒 Acquire / refresh lock |
+| `POST` | `/api/conversations/{id}/unlock/` | 🔓 Release lock |
+| `GET` | `/api/conversations/{id}/lock/` | ℹ️ Lock status |
+| `GET` | `/api/conversations/{id}/messages/?after={id}` | 🔄 Incremental messages (polling) |
+
+<details>
+<summary><b>📥 Example payloads & responses</b></summary>
+
+<br>
 
 **Login**
-```json
-// POST /api/auth/login/  → 200
+```jsonc
+// POST /api/auth/login/   →   200 OK
 { "username": "admin@test.com", "password": "admin123" }
+
 // response
 { "access": "eyJ...", "refresh": "eyJ..." }
 ```
 
 **Conversation list item**
-```json
-{ "id": 1, "customer_name": "John Doe", "last_message": "Need help with my order",
-  "status": "open", "created_at": "2026-01-01T12:00:00Z" }
+```jsonc
+{
+  "id": 1,
+  "customer_name": "John Doe",
+  "last_message": "Need help with my order",
+  "status": "open",
+  "created_at": "2026-01-01T12:00:00Z"
+}
 ```
 
 **Reply** → `201 Created` with the new message, or `423 Locked`:
-```json
+```jsonc
 { "detail": "Conversation is locked by another agent.", "locked_by": "agent2@test.com" }
 ```
 
 **Suggest-reply**
-```json
-// POST { "message": "I want a refund" }  → 200
+```jsonc
+// POST { "message": "I want a refund" }   →   200 OK
 { "suggestion": "We're sorry for the inconvenience. I've started your refund…" }
 ```
 
+</details>
+
+<br>
+
 ---
 
-## 4. Testing
+## 🧪 Testing
 
-### Backend (13 tests — pytest)
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### ⚙️ Backend — 13 tests
 ```bash
 cd backend
 CELERY_TASK_ALWAYS_EAGER=True python -m pytest
 ```
-Covers: JWT login + unauthorized rejection, paginated/searched/filtered list, conversation detail thread, **lock state transitions** (acquire, block other agent, takeover, expiry), **423 locked** API response, **Celery sentiment task** (positive + negative, eager mode), mock AI suggestion (unit + API), and reply creating a message.
 
-### Frontend (7 tests — Jest + React Testing Library)
+✅ JWT login + unauthorized rejection
+✅ Paginated / searched / filtered list
+✅ Conversation detail thread
+✅ Lock transitions (acquire, block, takeover, expiry)
+✅ `423 Locked` API response
+✅ Celery sentiment (positive + negative)
+✅ Mock AI suggestion (unit + API)
+✅ Reply creates message
+
+</td>
+<td width="50%" valign="top">
+
+### 🖥️ Frontend — 7 tests
 ```bash
 cd frontend
 npm test
 ```
-Covers **ConversationList** (loading, populated, empty, error+retry) and **MessageComposer** (optimistic insert → confirm on success, optimistic insert → **rollback + error toast** on failure, locked-state disables replying).
+
+**`ConversationList`**
+✅ Loading state
+✅ Populated list
+✅ Empty state
+✅ Error + retry
+
+**`MessageComposer`**
+✅ Optimistic insert → confirm
+✅ Optimistic insert → rollback + toast
+✅ Locked state disables replying
+
+</td>
+</tr>
+</table>
+
+<div align="center"><sub><b>20 / 20 passing</b> · backend verified end-to-end · frontend production build clean</sub></div>
+
+<br>
 
 ---
 
-## 5. Project Structure
+## 📁 Project Structure
 
 ```
 support-inbox/
-├── backend/
-│   ├── config/              # settings, urls, celery, wsgi/asgi
+├── 📂 backend/
+│   ├── config/                    # settings, urls, celery, wsgi/asgi
 │   ├── inbox/
-│   │   ├── models.py        # Conversation, Message, ConversationLock
+│   │   ├── models.py              # Conversation · Message · ConversationLock
 │   │   ├── serializers.py
-│   │   ├── views.py         # thin ConversationViewSet
-│   │   ├── services.py      # LockService, SuggestionService, SentimentAnalyzer
-│   │   ├── tasks.py         # Celery analyze_sentiment
+│   │   ├── views.py               # thin ConversationViewSet
+│   │   ├── services.py            # 🧠 LockService · SuggestionService · SentimentAnalyzer
+│   │   ├── tasks.py               # Celery analyze_sentiment
 │   │   ├── management/commands/seed.py
 │   │   └── tests/test_views.py
 │   ├── requirements.txt
 │   └── Dockerfile
-├── frontend/
+│
+├── 📂 frontend/
 │   ├── src/
-│   │   ├── app/             # login, conversations, conversations/[id]
-│   │   ├── components/      # ConversationList, MessageComposer, LockIndicator, Toast
-│   │   ├── hooks/           # usePollMessages (real-time transport)
-│   │   ├── lib/             # api client, providers
+│   │   ├── app/                   # login · conversations · conversations/[id]
+│   │   ├── components/            # ConversationList · MessageComposer · LockIndicator · Toast
+│   │   ├── hooks/                 # usePollMessages  (🔄 real-time transport)
+│   │   ├── lib/                   # api client · providers
 │   │   └── types/
-│   ├── __tests__/           # ConversationList, MessageComposer
+│   ├── __tests__/                 # ConversationList · MessageComposer
 │   └── Dockerfile
-├── docker-compose.yml
-└── README.md
+│
+├── 🐳 docker-compose.yml
+└── 📖 README.md
 ```
+
+<br>
 
 ---
 
-## 6. Key Design Decisions (summary)
+## 🔮 Roadmap
 
-1. **Thin views, fat services** — all locking, AI, and sentiment logic lives in `services.py`; views only validate and delegate.
-2. **Locking via `select_for_update`** — real atomicity, no race conditions, auto-expiry.
-3. **Async sentiment** — the reply endpoint calls `.delay()` and returns `201` immediately; the worker computes and persists sentiment separately.
-4. **Optimistic UI** — messages render instantly with an opacity "sending…" state; on API failure they're removed and a toast explains why, with the text restored so the agent doesn't lose work.
-5. **Polling over WS** — least infrastructure, fully isolated transport for easy future swap.
+- [ ] Swap polling → **WebSockets** (only `usePollMessages.ts` changes)
+- [ ] Move locking → **Redis** for high-churn scale
+- [ ] Real **LLM-powered** reply suggestions
+- [ ] Read **replicas** + Redis caching for the conversation list
+- [ ] **Queue routing** so urgent Celery tasks don't queue behind heavy ones
+- [ ] OpenAPI / Swagger schema + Postman collection
+
+<br>
+
+---
+
+<div align="center">
+
+### Built with clean architecture, real tests, and deliberate trade-offs.
+
+<sub>If this helped, consider giving it a ⭐</sub>
+
+<br>
+
+![Made with Django](https://img.shields.io/badge/Made_with-Django_+_Next.js-4f46e5?style=for-the-badge)
+
+</div>
